@@ -29,6 +29,10 @@ copyFileSync(
   path.join(projectRoot, "public", "chatgpt-icon.png"),
   path.join(resourcesRoot, "chatgpt-icon.png"),
 );
+copyFileSync(
+  path.join(projectRoot, "public", "panel-icon.png"),
+  path.join(resourcesRoot, "panel-icon.png"),
+);
 
 const iconSource = path.join(projectRoot, "public", "chatgpt-icon.png");
 const iconSizes = [

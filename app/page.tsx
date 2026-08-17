@@ -2,12 +2,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
+import { CodexPetSprite, type CodexPetState } from "./pet-sprite";
 
 type StatusKind = "running" | "completed" | "interrupted" | "disconnected" | "unknown";
 
 type Thread = {
   id: string;
   title: string;
+  customName: string | null;
+  generatedTitle: string | null;
   cwd: string;
   source: string;
   updatedAt: number;
@@ -25,7 +28,7 @@ type Thread = {
 type Snapshot = {
   ok: boolean;
   error?: string;
-  readOnlyCodexData?: boolean;
+  readOnlyCodexDatabase?: boolean;
   tracked: Thread[];
   candidates: Thread[];
   missingTrackedIds?: string[];
@@ -79,6 +82,124 @@ function postPanelMessage(message: Record<string, unknown>) {
   panel?.postMessage(message);
 }
 
+type ThreadNameEditorProps = {
+  thread: Thread;
+  saving: boolean;
+  variant: "pet" | "card";
+  renameThread: (threadId: string, name: string) => Promise<void>;
+  onEditingChange?: (editing: boolean) => void;
+};
+
+function ThreadNameEditor({
+  thread,
+  saving,
+  variant,
+  renameThread,
+  onEditingChange,
+}: ThreadNameEditorProps) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(thread.title);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const changeEditing = useCallback((next: boolean) => {
+    setEditing(next);
+    onEditingChange?.(next);
+  }, [onEditingChange]);
+
+  const beginEditing = useCallback(() => {
+    setDraft(thread.title);
+    setError(null);
+    changeEditing(true);
+  }, [changeEditing, thread.title]);
+
+  const cancelEditing = useCallback(() => {
+    if (saving) return;
+    setDraft(thread.title);
+    setError(null);
+    changeEditing(false);
+  }, [changeEditing, saving, thread.title]);
+
+  const saveName = useCallback(async () => {
+    if (saving) return;
+    setError(null);
+    try {
+      await renameThread(thread.id, draft);
+      changeEditing(false);
+    } catch (renameError) {
+      setError(renameError instanceof Error ? renameError.message : "修改名称失败");
+      window.setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  }, [changeEditing, draft, renameThread, saving, thread.id]);
+
+  useEffect(() => {
+    if (!editing) return;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, [editing]);
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        className={`threadNameDisplay ${variant}`}
+        aria-label={`修改会话名称：${thread.title}`}
+        title="点击修改会话名称"
+        onClick={beginEditing}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <span>{thread.title}</span>
+        <span className="renameGlyph" aria-hidden="true">✎</span>
+      </button>
+    );
+  }
+
+  return (
+    <div
+      className={`threadNameEditor ${variant}`}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <div className="threadNameInputRow">
+        <input
+          ref={inputRef}
+          value={draft}
+          aria-label="新的会话名称"
+          disabled={saving}
+          maxLength={80}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void saveName();
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              cancelEditing();
+            }
+          }}
+        />
+        <button
+          type="button"
+          className="threadNameSave"
+          aria-label="保存会话名称"
+          title="保存"
+          disabled={saving}
+          onClick={() => void saveName()}
+        >{saving ? "…" : "✓"}</button>
+        <button
+          type="button"
+          className="threadNameCancel"
+          aria-label="取消修改"
+          title="取消"
+          disabled={saving}
+          onClick={cancelEditing}
+        >×</button>
+      </div>
+      {error && <span className="threadNameError" role="alert">{error}</span>}
+    </div>
+  );
+}
+
 type PetViewProps = {
   snapshot: Snapshot;
   connected: boolean;
@@ -86,6 +207,7 @@ type PetViewProps = {
   query: string;
   busyId: string | null;
   openingId: string | null;
+  renamingId: string | null;
   actionError: string | null;
   now: number;
   workspaceGroups: Array<[string, Thread[]]>;
@@ -95,6 +217,7 @@ type PetViewProps = {
   setQuery: (query: string) => void;
   mutateTracking: (threadId: string, action: "track" | "untrack") => Promise<void>;
   openThread: (threadId: string) => Promise<void>;
+  renameThread: (threadId: string, name: string) => Promise<void>;
 };
 
 function PetView({
@@ -104,6 +227,7 @@ function PetView({
   query,
   busyId,
   openingId,
+  renamingId,
   actionError,
   now,
   workspaceGroups,
@@ -113,17 +237,31 @@ function PetView({
   setQuery,
   mutateTracking,
   openThread,
+  renameThread,
 }: PetViewProps) {
   const [expanded, setExpanded] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [dragPetState, setDragPetState] = useState<CodexPetState | null>(null);
+  const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const collapseTimer = useRef<number | null>(null);
   const expandSuppressedUntil = useRef(0);
   const draggingRef = useRef(false);
   const dragPointerId = useRef<number | null>(null);
+  const dragScreenX = useRef<number | null>(null);
+  const editingThreadIdRef = useRef<string | null>(null);
+  const hoveredRef = useRef(false);
   const trackedCount = snapshot.tracked.length;
+  const hasDisconnectedThread = snapshot.tracked.some((thread) => thread.status.kind === "disconnected");
+  const petState: CodexPetState = !connected || hasDisconnectedThread
+    ? "failed"
+    : runningCount > 0
+      ? "running"
+      : "idle";
   const trackedContentHeight = Math.max(
     270,
-    110 + workspaceGroups.length * 66 + trackedCount * 58 + (actionError || snapshot.error ? 38 : 0),
+    110 + workspaceGroups.length * 66 + trackedCount * 58
+      + (actionError || snapshot.error ? 38 : 0)
+      + (editingThreadId ? 34 : 0),
   );
   const availablePanelHeight = typeof window === "undefined"
     ? 860
@@ -151,7 +289,11 @@ function PetView({
     expandSuppressedUntil.current = Date.now() + suppressExpansionMs;
     draggingRef.current = false;
     dragPointerId.current = null;
+    dragScreenX.current = null;
     setDragging(false);
+    setDragPetState(null);
+    editingThreadIdRef.current = null;
+    setEditingThreadId(null);
     setExpanded(false);
     setPickerOpen(false);
     postPanelMessage({
@@ -169,10 +311,27 @@ function PetView({
   }, [cancelCollapse, expandedHeight, expandedWidth]);
 
   const scheduleCollapse = useCallback(() => {
-    if (draggingRef.current) return;
+    if (draggingRef.current || editingThreadIdRef.current) return;
     cancelCollapse();
     collapseTimer.current = window.setTimeout(collapsePanel, 320);
   }, [cancelCollapse, collapsePanel]);
+
+  const setThreadEditing = useCallback((threadId: string, editing: boolean) => {
+    cancelCollapse();
+    editingThreadIdRef.current = editing ? threadId : null;
+    setEditingThreadId(editing ? threadId : null);
+    if (!editing && !hoveredRef.current) scheduleCollapse();
+  }, [cancelCollapse, scheduleCollapse]);
+
+  const handleMouseEnter = useCallback(() => {
+    hoveredRef.current = true;
+    expandPanel();
+  }, [expandPanel]);
+
+  const handleMouseLeave = useCallback(() => {
+    hoveredRef.current = false;
+    scheduleCollapse();
+  }, [scheduleCollapse]);
 
   const openThreadAndCollapse = useCallback((threadId: string) => {
     // 切换到 VS Code 后 WebView 不一定还能收到 mouseleave。立即收回，并在跳转完成后再兜底收回一次。
@@ -185,7 +344,9 @@ function PetView({
     cancelCollapse();
     draggingRef.current = true;
     dragPointerId.current = event.pointerId;
+    dragScreenX.current = event.screenX;
     setDragging(true);
+    setDragPetState("jumping");
     event.currentTarget.setPointerCapture(event.pointerId);
     postPanelMessage({ type: "dragStart", screenX: event.screenX, screenY: event.screenY });
     event.preventDefault();
@@ -193,6 +354,15 @@ function PetView({
 
   const movePanelDrag = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     if (!draggingRef.current || dragPointerId.current !== event.pointerId) return;
+    const previousScreenX = dragScreenX.current ?? event.screenX;
+    const deltaX = event.screenX - previousScreenX;
+    if (deltaX >= 4) {
+      dragScreenX.current = event.screenX;
+      setDragPetState("running-right");
+    } else if (deltaX <= -4) {
+      dragScreenX.current = event.screenX;
+      setDragPetState("running-left");
+    }
     postPanelMessage({ type: "dragMove", screenX: event.screenX, screenY: event.screenY });
   }, []);
 
@@ -200,7 +370,9 @@ function PetView({
     if (!draggingRef.current || dragPointerId.current !== event.pointerId) return;
     draggingRef.current = false;
     dragPointerId.current = null;
+    dragScreenX.current = null;
     setDragging(false);
+    setDragPetState(null);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -227,8 +399,8 @@ function PetView({
   return (
     <main
       className={`petShell ${expanded ? "expanded" : "collapsed"} ${dragging ? "dragging" : ""}`}
-      onMouseEnter={expandPanel}
-      onMouseLeave={scheduleCollapse}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
     >
       <header
         className="petBar"
@@ -238,8 +410,8 @@ function PetView({
         onPointerUp={endPanelDrag}
         onPointerCancel={endPanelDrag}
       >
-        <div className={`petOrb ${!connected ? "offline" : runningCount > 0 ? "running" : "idle"}`}>
-          <span className="petLogo" role="img" aria-label="ChatGPT" />
+        <div className={`petOrb ${!connected || hasDisconnectedThread ? "offline" : runningCount > 0 ? "running" : "idle"}`}>
+          <CodexPetSprite state={petState} transientState={dragging ? dragPetState : null} />
         </div>
       </header>
 
@@ -324,7 +496,13 @@ function PetView({
                         <article className="petThread" key={thread.id}>
                           <span className={`stateDot ${thread.status.kind}`} />
                           <div className="petThreadMain">
-                            <strong title={thread.title}>{thread.title}</strong>
+                            <ThreadNameEditor
+                              thread={thread}
+                              variant="pet"
+                              saving={renamingId === thread.id}
+                              renameThread={renameThread}
+                              onEditingChange={(editing) => setThreadEditing(thread.id, editing)}
+                            />
                             <span className={thread.status.kind}>
                               {meta.label} · {thread.status.kind === "running"
                                 ? elapsedTime(thread.status.since, now)
@@ -334,13 +512,13 @@ function PetView({
                           <button
                             type="button"
                             className="petOpen"
-                            disabled={openingId === thread.id}
+                            disabled={openingId === thread.id || editingThreadId === thread.id || renamingId === thread.id}
                             onClick={() => openThreadAndCollapse(thread.id)}
                           >{openingId === thread.id ? "…" : "打开"}</button>
                           <button
                             type="button"
                             className="petRemove"
-                            disabled={busyId === thread.id}
+                            disabled={busyId === thread.id || editingThreadId === thread.id || renamingId === thread.id}
                             aria-label={`移除 ${thread.title}`}
                             title="仅取消关注"
                             onClick={() => mutateTracking(thread.id, "untrack")}
@@ -366,6 +544,7 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [openingId, setOpeningId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const previousStatusKinds = useRef<Map<string, StatusKind>>(new Map());
@@ -472,6 +651,23 @@ export default function Home() {
     }
   }, []);
 
+  const renameThread = useCallback(async (threadId: string, name: string) => {
+    setRenamingId(threadId);
+    setActionError(null);
+    try {
+      const response = await fetch(`${bridgeBase}/api/rename-thread`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ threadId, name }),
+      });
+      const data = await response.json() as Snapshot;
+      if (!response.ok || !data.ok) throw new Error(data.error || "修改名称失败");
+      setSnapshot(data);
+    } finally {
+      setRenamingId(null);
+    }
+  }, []);
+
   const workspaceGroups = useMemo(() => {
     const groups = new Map<string, Thread[]>();
     for (const thread of snapshot.tracked) {
@@ -501,6 +697,7 @@ export default function Home() {
         query={query}
         busyId={busyId}
         openingId={openingId}
+        renamingId={renamingId}
         actionError={actionError}
         now={now}
         workspaceGroups={workspaceGroups}
@@ -510,6 +707,7 @@ export default function Home() {
         setQuery={setQuery}
         mutateTracking={mutateTracking}
         openThread={openThread}
+        renameThread={renameThread}
       />
     );
   }
@@ -598,21 +796,26 @@ export default function Home() {
                           <button
                             className="removeButton"
                             type="button"
-                            disabled={busyId === thread.id}
+                            disabled={busyId === thread.id || renamingId === thread.id}
                             aria-label={`从面板移除 ${thread.title}`}
                             title="仅从面板移除，不删除真实 Chat"
                             onClick={() => mutateTracking(thread.id, "untrack")}
                           >×</button>
                         </div>
                         <p className="path">{thread.source} · {shortWorkspace(thread.cwd)}</p>
-                        <h4>{thread.title}</h4>
+                        <ThreadNameEditor
+                          thread={thread}
+                          variant="card"
+                          saving={renamingId === thread.id}
+                          renameThread={renameThread}
+                        />
                         <p className="detail">{detail}</p>
                         <footer>
                           <span>{relativeTime(thread.status.lastActivityAt || thread.updatedAt, now)}</span>
                           <button
                             type="button"
                             className="openThreadButton"
-                            disabled={openingId === thread.id}
+                            disabled={openingId === thread.id || renamingId === thread.id}
                             onClick={() => openThread(thread.id)}
                           >{openingId === thread.id ? "正在恢复…" : "恢复此 Chat ↗"}</button>
                         </footer>
@@ -627,7 +830,7 @@ export default function Home() {
       </section>
 
       <footer className="privacyNote">
-        <span className="privacyDot" /> Codex 数据只读 · 面板配置保存在本机 · 移除关注不会删除 Chat
+        <span className="privacyDot" /> Codex 数据库只读 · 名称通过官方接口保存 · 移除关注不会删除 Chat
       </footer>
 
       {pickerOpen && (

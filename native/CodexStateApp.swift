@@ -7,13 +7,18 @@ private struct RuntimeConfig: Decodable {
     let nodePath: String
 }
 
+private struct PetManifest: Decodable {
+    let spriteVersionNumber: Int?
+    let spritesheetPath: String
+}
+
 final class FloatingPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScriptMessageHandler, UNUserNotificationCenterDelegate {
-    private let collapsedSize = NSSize(width: 64, height: 64)
+    private let collapsedSize = NSSize(width: 112, height: 128)
     private let panelAnchorXKey = "CodexStatePanelAnchorX.v2"
     private let panelAnchorYKey = "CodexStatePanelAnchorY.v2"
     private var panel: FloatingPanel!
@@ -81,7 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         webView.setValue(false, forKey: "drawsBackground")
         webView.wantsLayer = true
         webView.layer?.backgroundColor = NSColor.clear.cgColor
-        webView.layer?.cornerRadius = 32
+        webView.layer?.cornerRadius = 0
         webView.layer?.cornerCurve = .continuous
         webView.layer?.masksToBounds = true
 
@@ -99,7 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         panel.isReleasedWhenClosed = false
         panel.backgroundColor = .clear
         panel.isOpaque = false
-        panel.hasShadow = true
+        panel.hasShadow = false
         panel.acceptsMouseMovedEvents = true
         panel.animationBehavior = .utilityWindow
         panel.contentView = webView
@@ -115,14 +120,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     private func showLoading(message: String) {
-        let iconSource: String
-        if
-            let iconURL = Bundle.main.url(forResource: "chatgpt-icon", withExtension: "png"),
-            let iconData = try? Data(contentsOf: iconURL)
-        {
-            iconSource = "data:image/png;base64,\(iconData.base64EncodedString())"
+        let visual: String
+        let baseURL: URL?
+        if let pet = currentPetLoadingAsset() {
+            visual = """
+            <div class="pet" role="img" aria-label="\(message)"></div>
+            <style>
+              .pet { width: 104px; height: 113px;
+                background: url("\(pet.fileName)") 0 0 / 800% \(pet.rows * 100)% no-repeat;
+                filter: drop-shadow(0 5px 5px rgba(0, 0, 0, .38)); }
+            </style>
+            """
+            baseURL = pet.directoryURL
         } else {
-            iconSource = ""
+            let iconSource: String
+            if
+                let iconURL = Bundle.main.url(forResource: "panel-icon", withExtension: "png"),
+                let iconData = try? Data(contentsOf: iconURL)
+            {
+                iconSource = "data:image/png;base64,\(iconData.base64EncodedString())"
+            } else {
+                iconSource = ""
+            }
+            visual = "<img src=\"\(iconSource)\" alt=\"\(message)\">"
+            baseURL = nil
         }
         let html = """
         <!doctype html>
@@ -130,14 +151,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         <meta charset="utf-8">
         <style>
           * { box-sizing: border-box; }
-          body { margin: 0; width: 64px; height: 64px; display: grid; place-items: center;
+          body { margin: 0; width: 112px; height: 128px; display: grid; place-items: center;
             overflow: hidden; background: transparent; }
-          img { width: 58px; height: 58px; border-radius: 50%; object-fit: cover;
-            transform: scale(1.18); }
+          img { width: 104px; height: 120px; object-fit: contain;
+            filter: drop-shadow(0 5px 5px rgba(0, 0, 0, .38)); }
         </style>
-        <img src="\(iconSource)" alt="\(message)">
+        \(visual)
         """
-        webView.loadHTMLString(html, baseURL: nil)
+        webView.loadHTMLString(html, baseURL: baseURL)
+    }
+
+    private func currentPetLoadingAsset() -> (directoryURL: URL, fileName: String, rows: Int)? {
+        guard
+            let runtimeURL = Bundle.main.url(forResource: "runtime", withExtension: "json"),
+            let runtimeData = try? Data(contentsOf: runtimeURL),
+            let runtime = try? JSONDecoder().decode(RuntimeConfig.self, from: runtimeData)
+        else { return nil }
+
+        let directoryURL = URL(fileURLWithPath: runtime.projectRoot, isDirectory: true)
+            .appendingPathComponent("public/pet", isDirectory: true)
+        let manifestURL = directoryURL.appendingPathComponent("pet.json")
+        guard
+            let manifestData = try? Data(contentsOf: manifestURL),
+            let manifest = try? JSONDecoder().decode(PetManifest.self, from: manifestData)
+        else { return nil }
+
+        let version = manifest.spriteVersionNumber ?? 1
+        let fileName = manifest.spritesheetPath
+        guard
+            version == 1 || version == 2,
+            fileName.range(
+                of: #"^[A-Za-z0-9._-]+\.(png|webp)$"#,
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil,
+            FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent(fileName).path)
+        else { return nil }
+
+        return (directoryURL, fileName, version == 2 ? 11 : 9)
     }
 
     private func startDashboard() {
@@ -429,7 +479,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             } else {
                 size = self.collapsedSize
             }
-            self.webView.layer?.cornerRadius = expanded ? 22 : size.width / 2
+            self.webView.layer?.cornerRadius = expanded ? 22 : 0
 
             let newFrame = NSRect(
                 x: oldFrame.maxX - size.width,
