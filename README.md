@@ -42,6 +42,7 @@ npm run dashboard
 - 按工作空间分组展示已关注 Chat。
 - 收起时只展示运行数和关注数，悬停后展示全部关注项目与 Chat。
 - 识别「运行中」「已完成」「已中断」「可能断联」。
+- 状态灯区分绿灯运行中、红灯完成未查看、灰灯完成已查看；红灯在悬浮入口上优先显示。
 - 关注中的 Chat 从「运行中」切换为完成、中断或断联时发送 macOS 通知并播放提示音。
 - 实时刷新会话状态和运行时长。
 - 从本机最近的 Codex Chat 中搜索并添加关注。
@@ -54,6 +55,8 @@ npm run dashboard
 面板从 `~/.codex/state_5.sqlite` 读取会话和工作区信息，从 `~/.codex/session_index.jsonl` 读取 VS Code/App Server 使用的最新会话名称，并从对应会话 JSONL 事件读取 `task_started`、`task_complete` 和 `turn_aborted`。线程锁用于辅助判断 Chat 是否已在 Codex 中打开。
 
 如果最新事件是 `task_started`，但会话已经长时间没有更新且不再持有线程锁，状态会显示为「可能断联」，而不是误报为运行中。
+
+“已查看”以面板成功打开对应 Chat 为准，查看时间保存在 `~/.codex-state/config.json`。首次升级和新添加的历史会话会建立灰灯基线，之后产生的新完成结果才会显示红灯。
 
 ## 数据边界
 

@@ -51,6 +51,10 @@ test("已清理临时骨架屏并保留正式元数据", async () => {
   assert.doesNotMatch(page, /onBlur=\{handleBlur\}/);
   assert.match(page, /openThreadAndCollapse/);
   assert.match(page, /openThread\(threadId\)\.finally/);
+  assert.match(page, /已完成 · 未查看/);
+  assert.match(page, /已完成 · 已查看/);
+  assert.match(page, /unreadCount/);
+  assert.match(page, /thread\.unreadCompletion/);
   assert.match(page, /expandSuppressedUntil/);
   assert.match(page, /suppressExpansionMs/);
   assert.match(page, /aria-label="收回面板"/);
@@ -70,6 +74,8 @@ test("已清理临时骨架屏并保留正式元数据", async () => {
   assert.match(styles, /\.codexPetSprite/);
   assert.match(styles, /\.petOrb \{[\s\S]*?background: transparent;[\s\S]*?box-shadow: none;/);
   assert.match(styles, /filter: drop-shadow/);
+  assert.match(styles, /\.petOrb\.unread::after/);
+  assert.match(styles, /\.stateDot\.unread/);
   assert.match(nativeApp, /collapsedSize = NSSize\(width: 112, height: 128\)/);
   assert.match(nativeApp, /panel\.hasShadow = false/);
   assert.match(nativeApp, /expanded \? 22 : 0/);

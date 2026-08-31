@@ -62,6 +62,41 @@ export function codexThreadDeepLink(threadId) {
   return `vscode://openai.chatgpt/local/${threadId}`;
 }
 
+export function isUnreadCompletion(status, viewedAt) {
+  return status?.kind === "completed"
+    && Number.isFinite(status.since)
+    && Number.isFinite(viewedAt)
+    && status.since > viewedAt;
+}
+
+export function reconcileViewState(config, now = Date.now()) {
+  const trackedThreadIds = [...new Set(
+    Array.isArray(config?.trackedThreadIds)
+      ? config.trackedThreadIds.filter((id) => isValidThreadId(id))
+      : [],
+  )];
+  const existing = config?.viewedAtByThreadId && typeof config.viewedAtByThreadId === "object"
+    ? config.viewedAtByThreadId
+    : {};
+  const viewedAtByThreadId = {};
+  let changed = trackedThreadIds.length !== (config?.trackedThreadIds?.length ?? 0);
+
+  for (const threadId of trackedThreadIds) {
+    const viewedAt = existing[threadId];
+    if (Number.isFinite(viewedAt) && viewedAt >= 0) {
+      viewedAtByThreadId[threadId] = viewedAt;
+    } else {
+      // Existing tracked chats start from a read baseline so this feature does
+      // not turn historical completions into a wall of false red alerts.
+      viewedAtByThreadId[threadId] = now;
+      changed = true;
+    }
+  }
+
+  if (Object.keys(existing).some((threadId) => !(threadId in viewedAtByThreadId))) changed = true;
+  return { config: { trackedThreadIds, viewedAtByThreadId }, changed };
+}
+
 export function normalizeThreadName(value) {
   if (typeof value !== "string") throw new Error("会话名称无效");
   const name = value.trim();
@@ -177,11 +212,14 @@ function readConfig() {
     const value = JSON.parse(readFileSync(configPath, "utf8"));
     return {
       trackedThreadIds: Array.isArray(value.trackedThreadIds)
-        ? [...new Set(value.trackedThreadIds.filter((id) => typeof id === "string"))]
+        ? [...new Set(value.trackedThreadIds.filter((id) => isValidThreadId(id)))]
         : [],
+      viewedAtByThreadId: value.viewedAtByThreadId && typeof value.viewedAtByThreadId === "object"
+        ? value.viewedAtByThreadId
+        : {},
     };
   } catch {
-    return { trackedThreadIds: [] };
+    return { trackedThreadIds: [], viewedAtByThreadId: {} };
   }
 }
 
@@ -333,9 +371,10 @@ export function displayTitle(thread) {
   return (thread.name || thread.title || fallback).replace(/\s+/g, " ").trim().slice(0, 180);
 }
 
-function serializeThread(thread, indexedName) {
+function serializeThread(thread, indexedName, viewedAt = null) {
   const userFacingName = indexedName || thread.name || null;
   const namedThread = userFacingName ? { ...thread, name: userFacingName } : thread;
+  const status = getThreadStatus(thread);
   return {
     id: thread.id,
     title: displayTitle(namedThread),
@@ -346,7 +385,8 @@ function serializeThread(thread, indexedName) {
     updatedAt: thread.recency_at_ms || thread.updated_at_ms,
     createdAt: thread.created_at_ms,
     pinnedInCodex: Boolean(thread.is_pinned),
-    status: getThreadStatus(thread),
+    unreadCompletion: isUnreadCompletion(status, viewedAt),
+    status,
   };
 }
 
@@ -368,7 +408,9 @@ export function createSnapshot() {
     database.close();
   }
 
-  const config = readConfig();
+  const reconciled = reconcileViewState(readConfig());
+  const config = reconciled.config;
+  if (reconciled.changed) writeConfig(config);
   const indexedNames = readThreadNameIndex();
   const byId = new Map(rows.map((thread) => [thread.id, thread]));
   const trackedRows = config.trackedThreadIds.map((id) => byId.get(id)).filter(Boolean);
@@ -377,7 +419,11 @@ export function createSnapshot() {
   return {
     ok: true,
     readOnlyCodexDatabase: true,
-    tracked: trackedRows.map((thread) => serializeThread(thread, indexedNames.get(thread.id))),
+    tracked: trackedRows.map((thread) => serializeThread(
+      thread,
+      indexedNames.get(thread.id),
+      config.viewedAtByThreadId[thread.id],
+    )),
     missingTrackedIds: config.trackedThreadIds.filter((id) => !byId.has(id)),
     candidates: rows
       .filter((row) => !trackedSet.has(row.id))
@@ -470,9 +516,16 @@ async function handleMutation(request, response, action) {
 
     const config = readConfig();
     const ids = new Set(config.trackedThreadIds);
-    if (action === "track") ids.add(body.threadId);
-    if (action === "untrack") ids.delete(body.threadId);
-    writeConfig({ trackedThreadIds: [...ids] });
+    const viewedAtByThreadId = { ...config.viewedAtByThreadId };
+    if (action === "track") {
+      ids.add(body.threadId);
+      viewedAtByThreadId[body.threadId] = Date.now();
+    }
+    if (action === "untrack") {
+      ids.delete(body.threadId);
+      delete viewedAtByThreadId[body.threadId];
+    }
+    writeConfig({ trackedThreadIds: [...ids], viewedAtByThreadId });
     const snapshot = createSnapshot();
     sendJson(request, response, 200, snapshot);
     broadcastSnapshot();
@@ -501,7 +554,14 @@ async function handleOpenThread(request, response) {
     }
 
     await openThreadInVSCode(thread);
-    sendJson(request, response, 200, { ok: true, threadId: thread.id });
+    const config = readConfig();
+    if (config.trackedThreadIds.includes(thread.id)) {
+      config.viewedAtByThreadId[thread.id] = Date.now();
+      writeConfig(config);
+    }
+    const snapshot = createSnapshot();
+    sendJson(request, response, 200, snapshot);
+    broadcastSnapshot();
   } catch (error) {
     sendJson(request, response, 500, {
       ok: false,

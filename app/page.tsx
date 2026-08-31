@@ -16,6 +16,7 @@ type Thread = {
   updatedAt: number;
   createdAt: number;
   pinnedInCodex: boolean;
+  unreadCompletion: boolean;
   status: {
     kind: StatusKind;
     since: number;
@@ -47,6 +48,20 @@ const statusMeta: Record<StatusKind, { label: string; detail: string }> = {
   disconnected: { label: "可能断联", detail: "任务未正常结束，当前没有会话连接" },
   unknown: { label: "未知", detail: "暂时无法确定最新状态" },
 };
+
+type IndicatorKind = StatusKind | "unread" | "viewed";
+
+function indicatorKind(thread: Thread): IndicatorKind {
+  if (thread.unreadCompletion) return "unread";
+  if (thread.status.kind === "completed") return "viewed";
+  return thread.status.kind;
+}
+
+function statusLabel(thread: Thread) {
+  if (thread.unreadCompletion) return "已完成 · 未查看";
+  if (thread.status.kind === "completed") return "已完成 · 已查看";
+  return statusMeta[thread.status.kind].label;
+}
 
 function shortWorkspace(cwd: string) {
   const pieces = cwd.split("/").filter(Boolean);
@@ -213,6 +228,7 @@ type PetViewProps = {
   workspaceGroups: Array<[string, Thread[]]>;
   filteredCandidates: Thread[];
   runningCount: number;
+  unreadCount: number;
   setPickerOpen: (open: boolean) => void;
   setQuery: (query: string) => void;
   mutateTracking: (threadId: string, action: "track" | "untrack") => Promise<void>;
@@ -233,6 +249,7 @@ function PetView({
   workspaceGroups,
   filteredCandidates,
   runningCount,
+  unreadCount,
   setPickerOpen,
   setQuery,
   mutateTracking,
@@ -251,6 +268,7 @@ function PetView({
   const editingThreadIdRef = useRef<string | null>(null);
   const hoveredRef = useRef(false);
   const trackedCount = snapshot.tracked.length;
+  const hasUnreadCompletion = unreadCount > 0;
   const hasDisconnectedThread = snapshot.tracked.some((thread) => thread.status.kind === "disconnected");
   const petState: CodexPetState = !connected || hasDisconnectedThread
     ? "failed"
@@ -410,7 +428,7 @@ function PetView({
         onPointerUp={endPanelDrag}
         onPointerCancel={endPanelDrag}
       >
-        <div className={`petOrb ${!connected || hasDisconnectedThread ? "offline" : runningCount > 0 ? "running" : "idle"}`}>
+        <div className={`petOrb ${hasUnreadCompletion ? "unread" : !connected || hasDisconnectedThread ? "offline" : runningCount > 0 ? "running" : "idle"}`}>
           <CodexPetSprite state={petState} transientState={dragging ? dragPetState : null} />
         </div>
       </header>
@@ -420,7 +438,11 @@ function PetView({
           <div className="petDrawerHead">
             <div>
               <strong>{pickerOpen ? "添加关注" : "关注中的 Chat"}</strong>
-              <span>{pickerOpen ? "本机最近会话" : `${workspaceGroups.length} 个工作目录`}</span>
+              <span>{pickerOpen
+                ? "本机最近会话"
+                : hasUnreadCompletion
+                  ? `${unreadCount} 个完成结果待查看`
+                  : `${workspaceGroups.length} 个工作目录`}</span>
             </div>
             <div className="petHeadActions">
               <button
@@ -457,7 +479,7 @@ function PetView({
                   <p className="petEmpty">没有可添加的 Chat</p>
                 ) : filteredCandidates.map((thread) => (
                   <article className="petCandidate" key={thread.id}>
-                    <span className={`stateDot ${thread.status.kind}`} />
+                    <span className={`stateDot ${indicatorKind(thread)}`} />
                     <div>
                       <strong>{thread.title}</strong>
                       <span>{thread.cwd}</span>
@@ -481,7 +503,7 @@ function PetView({
               style={{ columnCount: workspaceColumns }}
             >
               {workspaceGroups.map(([cwd, threads]) => (
-                <section className="petWorkspace" key={cwd}>
+                <section className={`petWorkspace ${threads.some((thread) => thread.unreadCompletion) ? "hasUnread" : ""}`} key={cwd}>
                   <div className="petWorkspaceHead">
                     <div>
                       <strong>{workspaceName(cwd)}</strong>
@@ -491,10 +513,10 @@ function PetView({
                   </div>
                   <div className="petThreads">
                     {threads.map((thread) => {
-                      const meta = statusMeta[thread.status.kind];
+                      const indicator = indicatorKind(thread);
                       return (
-                        <article className="petThread" key={thread.id}>
-                          <span className={`stateDot ${thread.status.kind}`} />
+                        <article className={`petThread ${indicator}`} key={thread.id}>
+                          <span className={`stateDot ${indicator}`} />
                           <div className="petThreadMain">
                             <ThreadNameEditor
                               thread={thread}
@@ -503,8 +525,8 @@ function PetView({
                               renameThread={renameThread}
                               onEditingChange={(editing) => setThreadEditing(thread.id, editing)}
                             />
-                            <span className={thread.status.kind}>
-                              {meta.label} · {thread.status.kind === "running"
+                            <span className={indicator}>
+                              {statusLabel(thread)} · {thread.status.kind === "running"
                                 ? elapsedTime(thread.status.since, now)
                                 : relativeTime(thread.status.lastActivityAt || thread.updatedAt, now)}
                             </span>
@@ -642,8 +664,9 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ threadId }),
       });
-      const data = await response.json() as { ok: boolean; error?: string };
+      const data = await response.json() as Snapshot;
       if (!response.ok || !data.ok) throw new Error(data.error || "无法恢复 Chat");
+      setSnapshot(data);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "无法恢复 Chat");
     } finally {
@@ -687,6 +710,7 @@ export default function Home() {
   }, [query, snapshot.candidates]);
 
   const runningCount = snapshot.tracked.filter((thread) => thread.status.kind === "running").length;
+  const unreadCount = snapshot.tracked.filter((thread) => thread.unreadCompletion).length;
 
   if (pet) {
     return (
@@ -703,6 +727,7 @@ export default function Home() {
         workspaceGroups={workspaceGroups}
         filteredCandidates={filteredCandidates}
         runningCount={runningCount}
+        unreadCount={unreadCount}
         setPickerOpen={setPickerOpen}
         setQuery={setQuery}
         mutateTracking={mutateTracking}
@@ -784,14 +809,15 @@ export default function Home() {
                 <div className="cards">
                   {threads.map((thread) => {
                     const meta = statusMeta[thread.status.kind];
+                    const indicator = indicatorKind(thread);
                     const detail = thread.status.kind === "running"
                       ? `${meta.detail} · ${elapsedTime(thread.status.since, now)}`
                       : meta.detail;
                     return (
-                      <article className={`chatCard ${thread.status.kind}`} key={thread.id}>
+                      <article className={`chatCard ${indicator}`} key={thread.id}>
                         <div className="cardTop">
-                          <span className={`stateDot ${thread.status.kind}`} />
-                          <span className={`stateLabel ${thread.status.kind}`}>{meta.label}</span>
+                          <span className={`stateDot ${indicator}`} />
+                          <span className={`stateLabel ${indicator}`}>{statusLabel(thread)}</span>
                           {thread.status.isOpen && <span className="openLabel">已打开</span>}
                           <button
                             className="removeButton"
@@ -859,7 +885,7 @@ export default function Home() {
                 <p className="noResults">没有匹配的 Chat</p>
               ) : filteredCandidates.map((thread) => (
                 <article className="candidate" key={thread.id}>
-                  <span className={`stateDot ${thread.status.kind}`} />
+                  <span className={`stateDot ${indicatorKind(thread)}`} />
                   <div className="candidateMain">
                     <h3>{thread.title}</h3>
                     <p>{shortWorkspace(thread.cwd)} · {thread.source} · {relativeTime(thread.updatedAt, now)}</p>

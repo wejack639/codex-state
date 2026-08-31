@@ -4,10 +4,12 @@ import {
   codexThreadDeepLink,
   deriveStatus,
   displayTitle,
+  isUnreadCompletion,
   isValidThreadId,
   normalizeThreadName,
   parseRolloutTail,
   parseThreadNameIndex,
+  reconcileViewState,
 } from "../scripts/bridge.mjs";
 
 const line = (timestamp, type) => JSON.stringify({
@@ -51,6 +53,26 @@ test("Codex Chat 深链包含精确 thread id", () => {
     `vscode://openai.chatgpt/local/${threadId}`,
   );
   assert.throws(() => codexThreadDeepLink("not-a-thread"), /threadId 无效/);
+});
+
+test("完成时间晚于查看时间时标记为未查看", () => {
+  assert.equal(isUnreadCompletion({ kind: "completed", since: 2_000 }, 1_000), true);
+  assert.equal(isUnreadCompletion({ kind: "completed", since: 2_000 }, 2_000), false);
+  assert.equal(isUnreadCompletion({ kind: "running", since: 2_000 }, 1_000), false);
+});
+
+test("旧配置迁移时建立已查看基线且清理未关注状态", () => {
+  const threadId = "019ffec3-6de8-7601-a7f0-fbbf4ef8a9e0";
+  const staleId = "019ffeab-5b55-7b62-be1b-d14dd8b0ef7f";
+  const result = reconcileViewState({
+    trackedThreadIds: [threadId],
+    viewedAtByThreadId: { [staleId]: 500 },
+  }, 1_000);
+  assert.equal(result.changed, true);
+  assert.deepEqual(result.config, {
+    trackedThreadIds: [threadId],
+    viewedAtByThreadId: { [threadId]: 1_000 },
+  });
 });
 
 test("自定义会话名称优先于自动标题", () => {
