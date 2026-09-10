@@ -24,6 +24,8 @@ test("服务端输出 Codex State 首屏", async () => {
   assert.match(html, /MISSION CONTROL/);
   assert.match(html, /添加 Chat/);
   assert.match(html, /本机工作台/);
+  assert.match(html, /data-theme="midnight"/);
+  assert.match(html, /aria-label="切换主题"/);
   assert.doesNotMatch(html, /codex-preview|SkeletonPreview|react-loading-skeleton/);
 });
 
@@ -40,6 +42,9 @@ test("已清理临时骨架屏并保留正式元数据", async () => {
   ]);
 
   assert.match(page, /EventSource/);
+  assert.match(page, /\/api\/theme/);
+  assert.match(page, /document\.documentElement\.dataset\.theme = theme/);
+  assert.match(page, /<ThemePicker/);
   assert.match(page, /URLSearchParams/);
   assert.match(page, /mutateTracking\(thread\.id, "track"\)/);
   assert.match(page, /mutateTracking\(thread\.id, "untrack"\)/);

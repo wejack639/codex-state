@@ -17,6 +17,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { CodexAppServerClient } from "./codex-app-server.mjs";
+import { DEFAULT_THEME, isTheme } from "../app/themes.mjs";
 
 const codexRoot = process.env.CODEX_STATE_CODEX_ROOT || path.join(os.homedir(), ".codex");
 const stateRoot = process.env.CODEX_STATE_DATA_ROOT || path.join(os.homedir(), ".codex-state");
@@ -97,7 +98,9 @@ export function reconcileViewState(config, now = Date.now()) {
   const existingFocused = Array.isArray(config?.focusedThreadIds) ? config.focusedThreadIds : [];
   const focusedThreadIds = [...new Set(existingFocused.filter((id) => trackedThreadIds.includes(id)))];
   if (focusedThreadIds.length !== existingFocused.length) changed = true;
-  return { config: { trackedThreadIds, viewedAtByThreadId, focusedThreadIds }, changed };
+  const theme = isTheme(config?.theme) ? config.theme : DEFAULT_THEME;
+  if (config?.theme !== theme) changed = true;
+  return { config: { trackedThreadIds, viewedAtByThreadId, focusedThreadIds, theme }, changed };
 }
 
 export function normalizeThreadName(value) {
@@ -223,6 +226,7 @@ function readConfig() {
       focusedThreadIds: Array.isArray(value.focusedThreadIds)
         ? [...new Set(value.focusedThreadIds.filter(isValidThreadId))]
         : [],
+      theme: value.theme,
     };
   } catch {
     return { trackedThreadIds: [], viewedAtByThreadId: {}, focusedThreadIds: [] };
@@ -398,9 +402,13 @@ function serializeThread(thread, indexedName, viewedAt = null, isFocused = false
 }
 
 export function createSnapshot() {
+  const reconciled = reconcileViewState(readConfig());
+  const config = reconciled.config;
+  if (reconciled.changed) writeConfig(config);
   if (!existsSync(databasePath)) {
     return {
       ok: false,
+      theme: config.theme,
       error: `未找到 Codex 状态库：${databasePath}`,
       tracked: [],
       candidates: [],
@@ -415,9 +423,6 @@ export function createSnapshot() {
     database.close();
   }
 
-  const reconciled = reconcileViewState(readConfig());
-  const config = reconciled.config;
-  if (reconciled.changed) writeConfig(config);
   const indexedNames = readThreadNameIndex();
   const byId = new Map(rows.map((thread) => [thread.id, thread]));
   const trackedRows = config.trackedThreadIds.map((id) => byId.get(id)).filter(Boolean);
@@ -426,6 +431,7 @@ export function createSnapshot() {
   return {
     ok: true,
     readOnlyCodexDatabase: true,
+    theme: config.theme,
     tracked: trackedRows.map((thread) => serializeThread(
       thread,
       indexedNames.get(thread.id),
@@ -543,9 +549,28 @@ async function handleMutation(request, response, action) {
       focusedIds.delete(body.threadId);
       delete viewedAtByThreadId[body.threadId];
     }
-    writeConfig({ trackedThreadIds: [...ids], viewedAtByThreadId, focusedThreadIds: [...focusedIds] });
+    writeConfig({ ...config, trackedThreadIds: [...ids], viewedAtByThreadId, focusedThreadIds: [...focusedIds] });
     const snapshot = createSnapshot();
     sendJson(request, response, 200, snapshot);
+    broadcastSnapshot();
+  } catch (error) {
+    sendJson(request, response, 400, { ok: false, error: error.message });
+  }
+}
+
+async function handleTheme(request, response) {
+  if (!originAllowed(request.headers.origin)) {
+    sendJson(request, response, 403, { ok: false, error: "不允许的请求来源" });
+    return;
+  }
+  try {
+    const { theme } = await readJson(request);
+    if (!isTheme(theme)) {
+      sendJson(request, response, 400, { ok: false, error: "请选择内置主题" });
+      return;
+    }
+    writeConfig({ ...readConfig(), theme });
+    sendJson(request, response, 200, { ...createSnapshot(), ok: true });
     broadcastSnapshot();
   } catch (error) {
     sendJson(request, response, 400, { ok: false, error: error.message });
@@ -687,6 +712,11 @@ export function createServer({
 
     if (request.method === "GET" && url.pathname === "/api/pet") {
       sendJson(request, response, 200, readPetPackage());
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/theme") {
+      await handleTheme(request, response);
       return;
     }
 

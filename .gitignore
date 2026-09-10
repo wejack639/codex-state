@@ -22,6 +22,11 @@
 .DS_Store
 *.pem
 
+# local agent workflows
+/.windsurf/
+/.agents/
+/.agent/
+
 # debug
 npm-debug.log*
 yarn-debug.log*

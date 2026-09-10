@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { CodexPetSprite, type CodexPetState } from "./pet-sprite";
+import { ThemePicker } from "./theme-picker";
+import { DEFAULT_THEME, isTheme } from "./themes.mjs";
 
 type StatusKind = "running" | "completed" | "interrupted" | "disconnected" | "unknown";
 type TrackingAction = "track" | "untrack" | "focus" | "unfocus";
@@ -30,6 +32,7 @@ type Thread = {
 
 type Snapshot = {
   ok: boolean;
+  theme?: string;
   error?: string;
   readOnlyCodexDatabase?: boolean;
   tracked: Thread[];
@@ -237,6 +240,9 @@ function FocusButton({ thread, disabled, mutateTracking }: {
 }
 
 type PetViewProps = {
+  theme: string;
+  savingTheme: boolean;
+  changeTheme: (theme: string) => void;
   snapshot: Snapshot;
   connected: boolean;
   pickerOpen: boolean;
@@ -258,6 +264,9 @@ type PetViewProps = {
 };
 
 function PetView({
+  theme,
+  savingTheme,
+  changeTheme,
   snapshot,
   connected,
   pickerOpen,
@@ -278,6 +287,7 @@ function PetView({
   renameThread,
 }: PetViewProps) {
   const [expanded, setExpanded] = useState(false);
+  const [themePickerOpen, setThemePickerOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [dragPetState, setDragPetState] = useState<CodexPetState | null>(null);
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
@@ -335,6 +345,7 @@ function PetView({
     editingThreadIdRef.current = null;
     setEditingThreadId(null);
     setExpanded(false);
+    setThemePickerOpen(false);
     setPickerOpen(false);
     postPanelMessage({
       type: "resize",
@@ -469,6 +480,8 @@ function PetView({
               </span>
             </div>
             <div className="petHeadActions">
+              <ThemePicker theme={theme} open={themePickerOpen} saving={savingTheme}
+                onOpenChange={setThemePickerOpen} onSelect={changeTheme} />
               <button
                 type="button"
                 className="petCollapse"
@@ -597,10 +610,40 @@ export default function Home() {
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingTheme, setPendingTheme] = useState<string | null>(null);
+  const themeSavingRef = useRef(false);
+  const [themePickerOpen, setThemePickerOpen] = useState(false);
+  const theme = pendingTheme ?? (isTheme(snapshot.theme) ? snapshot.theme! : DEFAULT_THEME);
   const [now, setNow] = useState(() => Date.now());
   const previousStatusKinds = useRef<Map<string, StatusKind>>(new Map());
   const compact = useSyncExternalStore(subscribeToLocation, getCompactSnapshot, () => false);
   const pet = useSyncExternalStore(subscribeToLocation, getPetSnapshot, () => false);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
+
+  const changeTheme = useCallback(async (nextTheme: string) => {
+    if (themeSavingRef.current || !isTheme(nextTheme)) return;
+    themeSavingRef.current = true;
+    setPendingTheme(nextTheme);
+    setActionError(null);
+    try {
+      const response = await fetch(`${bridgeBase}/api/theme`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ theme: nextTheme }),
+      });
+      const data = await response.json() as Snapshot;
+      if (!response.ok || !data.ok) throw new Error(data.error || "主题保存失败");
+      setSnapshot(data);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "主题保存失败");
+    } finally {
+      themeSavingRef.current = false;
+      setPendingTheme(null);
+    }
+  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1_000);
@@ -744,6 +787,9 @@ export default function Home() {
   if (pet) {
     return (
       <PetView
+        theme={theme}
+        savingTheme={pendingTheme !== null}
+        changeTheme={changeTheme}
         snapshot={snapshot}
         connected={connected}
         pickerOpen={pickerOpen}
@@ -776,8 +822,12 @@ export default function Home() {
             <span>本机工作台</span>
           </div>
         </div>
-        <div className={`livePill ${connected ? "online" : "offline"}`}>
-          <span />{connected ? "实时连接" : "本机桥接未连接"}
+        <div className="topbarActions">
+          <ThemePicker theme={theme} open={themePickerOpen} saving={pendingTheme !== null}
+            onOpenChange={setThemePickerOpen} onSelect={changeTheme} />
+          <div className={`livePill ${connected ? "online" : "offline"}`}>
+            <span />{connected ? "实时连接" : "本机桥接未连接"}
+          </div>
         </div>
       </header>
 
