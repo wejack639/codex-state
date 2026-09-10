@@ -116,6 +116,29 @@ h2 { margin: 0; font-size: 22px; letter-spacing: -.04em; }
 .chatCard.unread { border-color: rgba(239,79,67,.46); box-shadow: inset 0 3px 0 rgba(239,79,67,.9); }
 .chatCard:hover { transform: translateY(-2px); box-shadow: 0 14px 30px rgba(35, 38, 30, .08); }
 .cardTop { display: flex; align-items: center; gap: 8px; }
+.focusButton {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: #777c71;
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+}
+.focusButton:hover { color: #997020; background: rgba(227,181,67,.12); }
+.focusButton.active { color: #94650c; background: rgba(227,181,67,.16); border-color: rgba(180,128,25,.28); }
+.focusButton:focus-visible { outline: 2px solid #e7ba58; outline-offset: 2px; }
+.focusButton:disabled { opacity: .5; cursor: wait; }
+.chatCard.focused { background: #fff9e9; outline: 1px solid #d5ad52; }
+.petThread .focusButton { color: #93998e; }
+.petThread .focusButton:hover, .petThread .focusButton.active { color: #f4cb6b; }
+.petThread .focusButton.active { background: rgba(244,203,107,.13); border-color: rgba(244,203,107,.3); }
 .stateDot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: #a4a79f; }
 .stateDot.running { background: #65c438; box-shadow: 0 0 0 5px rgba(101,196,56,.12); animation: breathe 1.8s ease-in-out infinite; }
 .stateDot.unread { background: #ef4f43; box-shadow: 0 0 0 5px rgba(239,79,67,.15); animation: alertPulse 1.35s ease-in-out infinite; }
@@ -428,7 +451,7 @@ body.petDocument {
 .petThread {
   min-height: 54px;
   display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) auto auto;
+  grid-template-columns: 8px minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 9px;
   padding: 8px 8px 8px 11px;
@@ -437,6 +460,9 @@ body.petDocument {
 .petThread:first-child { border-top: 0; }
 .petThread:hover { background: rgba(255,255,255,.035); }
 .petThread.unread { background: rgba(239,79,67,.075); box-shadow: inset 2px 0 0 #ef4f43; }
+.petThread.focused { background: rgba(244,203,107,.08); box-shadow: inset -2px 0 0 #d8b458; }
+.petThread.focused:hover { background: rgba(244,203,107,.12); }
+.petThread.focused.unread { background: rgba(239,79,67,.075); box-shadow: inset 2px 0 0 #ef4f43, inset -2px 0 0 #d8b458; }
 .petThread .stateDot { width: 7px; height: 7px; }
 .petThreadMain { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
 .threadNameDisplay.pet {

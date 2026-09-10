@@ -72,6 +72,7 @@ test("旧配置迁移时建立已查看基线且清理未关注状态", () => {
   assert.deepEqual(result.config, {
     trackedThreadIds: [threadId],
     viewedAtByThreadId: { [threadId]: 1_000 },
+    focusedThreadIds: [],
   });
 });
 

@@ -5,6 +5,7 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import { CodexPetSprite, type CodexPetState } from "./pet-sprite";
 
 type StatusKind = "running" | "completed" | "interrupted" | "disconnected" | "unknown";
+type TrackingAction = "track" | "untrack" | "focus" | "unfocus";
 
 type Thread = {
   id: string;
@@ -17,6 +18,7 @@ type Thread = {
   createdAt: number;
   pinnedInCodex: boolean;
   unreadCompletion: boolean;
+  isFocused: boolean;
   status: {
     kind: StatusKind;
     since: number;
@@ -215,6 +217,25 @@ function ThreadNameEditor({
   );
 }
 
+function FocusButton({ thread, disabled, mutateTracking }: {
+  thread: Thread;
+  disabled: boolean;
+  mutateTracking: (threadId: string, action: TrackingAction) => Promise<void>;
+}) {
+  const label = thread.isFocused ? "取消重点关注" : "标记为重点关注";
+  return (
+    <button
+      type="button"
+      className={`focusButton ${thread.isFocused ? "active" : ""}`}
+      aria-label={`${label}：${thread.title}`}
+      aria-pressed={Boolean(thread.isFocused)}
+      title={label}
+      disabled={disabled}
+      onClick={() => void mutateTracking(thread.id, thread.isFocused ? "unfocus" : "focus")}
+    ><span aria-hidden="true">{thread.isFocused ? "★" : "☆"}</span></button>
+  );
+}
+
 type PetViewProps = {
   snapshot: Snapshot;
   connected: boolean;
@@ -231,7 +252,7 @@ type PetViewProps = {
   unreadCount: number;
   setPickerOpen: (open: boolean) => void;
   setQuery: (query: string) => void;
-  mutateTracking: (threadId: string, action: "track" | "untrack") => Promise<void>;
+  mutateTracking: (threadId: string, action: TrackingAction) => Promise<void>;
   openThread: (threadId: string) => Promise<void>;
   renameThread: (threadId: string, name: string) => Promise<void>;
 };
@@ -268,6 +289,7 @@ function PetView({
   const editingThreadIdRef = useRef<string | null>(null);
   const hoveredRef = useRef(false);
   const trackedCount = snapshot.tracked.length;
+  const focusedCount = snapshot.tracked.filter((thread) => thread.isFocused).length;
   const hasUnreadCompletion = unreadCount > 0;
   const hasDisconnectedThread = snapshot.tracked.some((thread) => thread.status.kind === "disconnected");
   const petState: CodexPetState = !connected || hasDisconnectedThread
@@ -442,7 +464,9 @@ function PetView({
                 ? "本机最近会话"
                 : hasUnreadCompletion
                   ? `${unreadCount} 个完成结果待查看`
-                  : `${workspaceGroups.length} 个工作目录`}</span>
+                  : `${workspaceGroups.length} 个工作目录`}
+                {!pickerOpen && focusedCount > 0 && ` · ★ ${focusedCount} 个重点关注`}
+              </span>
             </div>
             <div className="petHeadActions">
               <button
@@ -515,7 +539,7 @@ function PetView({
                     {threads.map((thread) => {
                       const indicator = indicatorKind(thread);
                       return (
-                        <article className={`petThread ${indicator}`} key={thread.id}>
+                        <article className={`petThread ${indicator} ${thread.isFocused ? "focused" : ""}`} key={thread.id}>
                           <span className={`stateDot ${indicator}`} />
                           <div className="petThreadMain">
                             <ThreadNameEditor
@@ -531,6 +555,11 @@ function PetView({
                                 : relativeTime(thread.status.lastActivityAt || thread.updatedAt, now)}
                             </span>
                           </div>
+                          <FocusButton
+                            thread={thread}
+                            disabled={busyId !== null || editingThreadId === thread.id || renamingId === thread.id}
+                            mutateTracking={mutateTracking}
+                          />
                           <button
                             type="button"
                             className="petOpen"
@@ -636,7 +665,7 @@ export default function Home() {
     previousStatusKinds.current = current;
   }, [snapshot.tracked]);
 
-  const mutateTracking = useCallback(async (threadId: string, action: "track" | "untrack") => {
+  const mutateTracking = useCallback(async (threadId: string, action: TrackingAction) => {
     setBusyId(threadId);
     setActionError(null);
     try {
@@ -814,11 +843,16 @@ export default function Home() {
                       ? `${meta.detail} · ${elapsedTime(thread.status.since, now)}`
                       : meta.detail;
                     return (
-                      <article className={`chatCard ${indicator}`} key={thread.id}>
+                      <article className={`chatCard ${indicator} ${thread.isFocused ? "focused" : ""}`} key={thread.id}>
                         <div className="cardTop">
                           <span className={`stateDot ${indicator}`} />
                           <span className={`stateLabel ${indicator}`}>{statusLabel(thread)}</span>
                           {thread.status.isOpen && <span className="openLabel">已打开</span>}
+                          <FocusButton
+                            thread={thread}
+                            disabled={busyId !== null || renamingId === thread.id}
+                            mutateTracking={mutateTracking}
+                          />
                           <button
                             className="removeButton"
                             type="button"

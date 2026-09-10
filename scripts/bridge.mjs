@@ -94,7 +94,10 @@ export function reconcileViewState(config, now = Date.now()) {
   }
 
   if (Object.keys(existing).some((threadId) => !(threadId in viewedAtByThreadId))) changed = true;
-  return { config: { trackedThreadIds, viewedAtByThreadId }, changed };
+  const existingFocused = Array.isArray(config?.focusedThreadIds) ? config.focusedThreadIds : [];
+  const focusedThreadIds = [...new Set(existingFocused.filter((id) => trackedThreadIds.includes(id)))];
+  if (focusedThreadIds.length !== existingFocused.length) changed = true;
+  return { config: { trackedThreadIds, viewedAtByThreadId, focusedThreadIds }, changed };
 }
 
 export function normalizeThreadName(value) {
@@ -217,9 +220,12 @@ function readConfig() {
       viewedAtByThreadId: value.viewedAtByThreadId && typeof value.viewedAtByThreadId === "object"
         ? value.viewedAtByThreadId
         : {},
+      focusedThreadIds: Array.isArray(value.focusedThreadIds)
+        ? [...new Set(value.focusedThreadIds.filter(isValidThreadId))]
+        : [],
     };
   } catch {
-    return { trackedThreadIds: [], viewedAtByThreadId: {} };
+    return { trackedThreadIds: [], viewedAtByThreadId: {}, focusedThreadIds: [] };
   }
 }
 
@@ -371,7 +377,7 @@ export function displayTitle(thread) {
   return (thread.name || thread.title || fallback).replace(/\s+/g, " ").trim().slice(0, 180);
 }
 
-function serializeThread(thread, indexedName, viewedAt = null) {
+function serializeThread(thread, indexedName, viewedAt = null, isFocused = false) {
   const userFacingName = indexedName || thread.name || null;
   const namedThread = userFacingName ? { ...thread, name: userFacingName } : thread;
   const status = getThreadStatus(thread);
@@ -386,6 +392,7 @@ function serializeThread(thread, indexedName, viewedAt = null) {
     createdAt: thread.created_at_ms,
     pinnedInCodex: Boolean(thread.is_pinned),
     unreadCompletion: isUnreadCompletion(status, viewedAt),
+    isFocused,
     status,
   };
 }
@@ -423,6 +430,7 @@ export function createSnapshot() {
       thread,
       indexedNames.get(thread.id),
       config.viewedAtByThreadId[thread.id],
+      config.focusedThreadIds.includes(thread.id),
     )),
     missingTrackedIds: config.trackedThreadIds.filter((id) => !byId.has(id)),
     candidates: rows
@@ -516,16 +524,26 @@ async function handleMutation(request, response, action) {
 
     const config = readConfig();
     const ids = new Set(config.trackedThreadIds);
+    const focusedIds = new Set(config.focusedThreadIds);
     const viewedAtByThreadId = { ...config.viewedAtByThreadId };
+    if (action === "focus" || action === "unfocus") {
+      if (!ids.has(body.threadId)) {
+        sendJson(request, response, 404, { ok: false, error: "请先将会话添加到面板" });
+        return;
+      }
+      if (action === "focus") focusedIds.add(body.threadId);
+      else focusedIds.delete(body.threadId);
+    }
     if (action === "track") {
       ids.add(body.threadId);
       viewedAtByThreadId[body.threadId] = Date.now();
     }
     if (action === "untrack") {
       ids.delete(body.threadId);
+      focusedIds.delete(body.threadId);
       delete viewedAtByThreadId[body.threadId];
     }
-    writeConfig({ trackedThreadIds: [...ids], viewedAtByThreadId });
+    writeConfig({ trackedThreadIds: [...ids], viewedAtByThreadId, focusedThreadIds: [...focusedIds] });
     const snapshot = createSnapshot();
     sendJson(request, response, 200, snapshot);
     broadcastSnapshot();
@@ -534,7 +552,7 @@ async function handleMutation(request, response, action) {
   }
 }
 
-async function handleOpenThread(request, response) {
+async function handleOpenThread(request, response, openThread) {
   if (!originAllowed(request.headers.origin)) {
     sendJson(request, response, 403, { ok: false, error: "不允许的请求来源" });
     return;
@@ -553,7 +571,7 @@ async function handleOpenThread(request, response) {
       return;
     }
 
-    await openThreadInVSCode(thread);
+    await openThread(thread);
     const config = readConfig();
     if (config.trackedThreadIds.includes(thread.id)) {
       config.viewedAtByThreadId[thread.id] = Date.now();
@@ -629,6 +647,7 @@ async function handleRenameThread(request, response, {
 }
 
 export function createServer({
+  openThread = openThreadInVSCode,
   appServerClient = defaultAppServerClient,
   findThreadById = findThread,
   snapshotFactory = createSnapshot,
@@ -699,7 +718,12 @@ export function createServer({
     }
 
     if (request.method === "POST" && url.pathname === "/api/open-thread") {
-      await handleOpenThread(request, response);
+      await handleOpenThread(request, response, openThread);
+      return;
+    }
+
+    if (request.method === "POST" && ["/api/focus", "/api/unfocus"].includes(url.pathname)) {
+      await handleMutation(request, response, url.pathname === "/api/focus" ? "focus" : "unfocus");
       return;
     }
 
